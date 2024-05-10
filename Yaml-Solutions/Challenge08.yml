@@ -1,0 +1,80 @@
+name: CI/CD Deploy Web App
+
+env:
+  registryName: 4wuc66zjaamv4wthregsmith.azurecr.io
+  repositoryName: wth/razorcore
+  dockerfilePath: Application/src/RazorPagesTestSample
+  tag: ${{github.run_number}}
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+    - 'Application/**'
+    - '.github/workflows/ci.yml'
+  workflow_dispatch:
+      
+jobs:
+
+  build-and-test:
+  
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: 6.0
+        
+    - name: Install dependencies
+      run: dotnet restore ./Application/src/RazorPagesTestSample/RazorPagesTestSample.csproj
+    - name: Build
+      run: dotnet build ./Application/src/RazorPagesTestSample/RazorPagesTestSample.csproj --configuration Release --no-restore
+    - name: Test
+      run: dotnet test ./Application/tests/RazorPagesTestSample.Tests/RazorPagesTestSample.Tests.csproj --no-restore --verbosity normal
+      
+  docker-build-and-push:
+  
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+        
+      - name: Azure Container Registry Login
+        uses: docker/login-action@v1.9.0
+        with:
+          # Server address of Docker registry. If not set then will default to Docker Hub
+          registry: ${{ env.registryName }}
+          # Username used to log against the Docker registry
+          username: ${{ secrets.ACR_USERNAME }}
+          # Password or personal access token used to log against the Docker registry
+          password: ${{ secrets.ACR_PASSWORD }}
+          # Log out from the Docker registry at the end of a job
+          logout: true
+
+      - name: Docker Build
+        run: docker build -t $registryName/$repositoryName:$tag --build-arg build_version=$tag $dockerfilePath
+
+      - name: Docker Push
+        run: docker push $registryName/$repositoryName:$tag
+      
+  deploy-to-dev:
+  
+    runs-on: ubuntu-latest
+    needs: docker-build-and-push
+    environment:
+      name: dev
+      url: https://4wuc66zjaamv4-dev-smith.azurewebsites.net/
+    
+    steps:
+      - name: 'Login via Azure CLI'
+        uses: azure/login@v1
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+      - uses: Azure/webapps-deploy@v3.0.1
+        with:
+          app-name: '4wuc66zjaamv4-dev-smith'
+          images: ${{secrets.ACR_NAME}}/wth/razorcore:${{github.run_number}}
